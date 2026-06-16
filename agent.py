@@ -92,9 +92,89 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    import re
+
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+    session["retry_count"] = 0
+
+    search_text = (query or "").strip()
+    first_sentence = re.split(r"[.!?]", search_text, maxsplit=1)[0]
+
+    price_match = re.search(
+        r"(?:\b(?:under|below|less than|up to)\s*\$?(\d+(?:\.\d{1,2})?)|\$(\d+(?:\.\d{1,2})?))",
+        first_sentence,
+        re.IGNORECASE,
+    )
+    max_price = float(next(group for group in price_match.groups() if group)) if price_match else None
+
+    size = None
+    size_match = re.search(
+        r"\b(?:in\s+)?size\s+([a-z0-9./-]+)|"
+        r"\b(XXXL|XXL|XL|XS|XXS|S/M|M/L|L/XL|XS/S|S|M|L|US\s*\d+(?:\.\d)?|W\d+(?:\s*L\d+)?)\b",
+        first_sentence,
+        re.IGNORECASE,
+    )
+    if size_match:
+        size = next(group for group in size_match.groups() if group)
+        size = re.sub(r"\s+", " ", size.upper()).strip()
+
+    description = re.sub(
+        r"(?:\b(?:under|below|less than|up to)\s*\$?\d+(?:\.\d{1,2})?|\$\d+(?:\.\d{1,2})?)",
+        " ",
+        first_sentence,
+        flags=re.IGNORECASE,
+    )
+    description = re.sub(
+        r"\b(?:in\s+)?size\s+[a-z0-9./-]+",
+        " ",
+        description,
+        flags=re.IGNORECASE,
+    )
+    description = re.sub(
+        r"\b(i'?m|i am|looking for|searching for|want|need|find me|show me)\b",
+        " ",
+        description,
+        flags=re.IGNORECASE,
+    )
+    description = re.sub(r"[^a-zA-Z0-9\s/-]", " ", description)
+    description = " ".join(description.split())
+
+    session["parsed"] = {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
+
+    results = search_listings(description, size=size, max_price=max_price)
+    session["search_results"] = results
+    if not results:
+        session["error"] = "No matching listings were found for that description and price range. Try a different search."
+        return session
+
+    session["selected_item"] = results[0]
+
+    outfit = suggest_outfit(session["selected_item"], session["wardrobe"])
+    if not outfit or not outfit.strip():
+        if len(results) < 2:
+            session["error"] = "Unable to build a complete outfit with your wardrobe and available listings. Try a different search."
+            return session
+
+        session["retry_count"] = 1
+        session["selected_item"] = results[1]
+        outfit = suggest_outfit(session["selected_item"], session["wardrobe"])
+
+        if not outfit or not outfit.strip():
+            session["error"] = "Unable to build a complete outfit with your wardrobe and available listings. Try a different search."
+            return session
+
+    session["outfit_suggestion"] = outfit
+
+    fit_card = create_fit_card(session["outfit_suggestion"], session["selected_item"])
+    if not fit_card or not fit_card.strip() or "outfit suggestion is empty" in fit_card.lower():
+        session["error"] = "We created outfit suggestions but couldn't generate a caption. Try again or adjust your query."
+        return session
+
+    session["fit_card"] = fit_card
     return session
 
 
