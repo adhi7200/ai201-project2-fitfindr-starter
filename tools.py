@@ -69,8 +69,61 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    import re
+
+    if not description or not description.strip():
+        return []
+
+    stop_words = {
+        "a", "an", "and", "for", "i", "in", "is", "looking", "of", "or",
+        "the", "to", "under", "want", "with",
+    }
+
+    def normalize_words(text: str) -> list[str]:
+        return [
+            word
+            for word in re.findall(r"[a-z0-9]+", text.lower())
+            if word not in stop_words
+        ]
+
+    query_words = normalize_words(description)
+    if not query_words:
+        return []
+
+    scored_results = []
+    normalized_size = size.lower().strip() if size else None
+
+    for listing in load_listings():
+        if max_price is not None and listing.get("price", 0) > max_price:
+            continue
+
+        listing_size = str(listing.get("size", "")).lower()
+        if normalized_size and normalized_size not in listing_size:
+            continue
+
+        searchable_parts = [
+            listing.get("title", ""),
+            listing.get("description", ""),
+            listing.get("category", ""),
+            " ".join(listing.get("style_tags", [])),
+            " ".join(listing.get("colors", [])),
+            listing.get("brand") or "",
+        ]
+        searchable_text = " ".join(searchable_parts).lower()
+        searchable_words = set(normalize_words(searchable_text))
+
+        score = sum(1 for word in query_words if word in searchable_words)
+        if description.lower().strip() in searchable_text:
+            score += 2
+        for tag in listing.get("style_tags", []):
+            if tag.lower() in description.lower():
+                score += 2
+
+        if score > 0:
+            scored_results.append((score, listing))
+
+    scored_results.sort(key=lambda result: (-result[0], result[1].get("price", 0)))
+    return [listing for _, listing in scored_results[:3]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +153,67 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not new_item:
+        return ""
+
+    wardrobe_items = (wardrobe or {}).get("items", [])
+    item_summary = (
+        f"{new_item.get('title', 'Selected item')} "
+        f"({new_item.get('category', 'unknown category')}, "
+        f"size {new_item.get('size', 'unknown')}, "
+        f"{', '.join(new_item.get('colors', []))}, "
+        f"tags: {', '.join(new_item.get('style_tags', []))}, "
+        f"${new_item.get('price', 'unknown')} on {new_item.get('platform', 'unknown')})"
+    )
+
+    if wardrobe_items:
+        wardrobe_text = "\n".join(
+            "- "
+            f"{item.get('name', 'Unnamed item')} "
+            f"({item.get('category', 'unknown')}; "
+            f"colors: {', '.join(item.get('colors', []))}; "
+            f"tags: {', '.join(item.get('style_tags', []))}; "
+            f"notes: {item.get('notes') or 'none'})"
+            for item in wardrobe_items
+        )
+        user_prompt = (
+            "New thrifted item:\n"
+            f"{item_summary}\n\n"
+            "User wardrobe:\n"
+            f"{wardrobe_text}\n\n"
+            "Suggest 1-2 complete outfits that use the new item and named "
+            "pieces from the wardrobe. Include why the colors, silhouette, "
+            "and style work together. Keep it practical and specific."
+        )
+    else:
+        user_prompt = (
+            "New thrifted item:\n"
+            f"{item_summary}\n\n"
+            "The user has not added wardrobe items yet. Suggest 1-2 ways to "
+            "style this item using common basics, including colors, silhouettes, "
+            "shoes, and accessories that would work well."
+        )
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are FitFindr, a concise secondhand fashion stylist. "
+                        "Write useful outfit suggestions, not shopping ads."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.8,
+            max_tokens=450,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return ""
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +245,43 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        return "Cannot create a fit card because the outfit suggestion is empty."
+
+    if not new_item:
+        return ""
+
+    item_title = new_item.get("title", "this thrifted find")
+    item_price = new_item.get("price", "unknown price")
+    item_platform = new_item.get("platform", "unknown platform")
+
+    prompt = (
+        "Write a casual Instagram-style outfit caption in 1-3 sentences.\n"
+        "It should sound like a real person sharing an outfit, not a product ad.\n"
+        f"New item: {item_title}\n"
+        f"Price: ${item_price}\n"
+        f"Platform: {item_platform}\n"
+        f"Outfit idea: {outfit}\n\n"
+        "Naturally mention the item, price, platform, and overall outfit vibe."
+    )
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You write short, authentic outfit captions for social "
+                        "posts. Avoid hashtags, bullet points, and product-copy tone."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.95,
+            max_tokens=180,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return ""

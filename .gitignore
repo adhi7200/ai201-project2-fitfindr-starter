@@ -12,3 +12,4 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
+instructions.txt
