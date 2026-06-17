@@ -1,6 +1,6 @@
 
 import tools
-from tools import create_fit_card, search_listings, suggest_outfit
+from tools import compare_price, create_fit_card, search_listings, suggest_outfit
 from utils.data_loader import get_empty_wardrobe, get_example_wardrobe
 
 def test_search_returns_results():
@@ -113,3 +113,35 @@ def test_create_fit_card_returns_caption(monkeypatch):
     assert isinstance(result, str)
     assert result.strip() != ""
     assert "depop" in result.lower()
+
+
+def test_compare_price_returns_price_context():
+    item = search_listings("vintage graphic tee", size=None, max_price=50)[0]
+    result = compare_price(item)
+
+    assert result["selected_price"] == item["price"]
+    assert result["verdict"] in {"good deal", "fair price", "pricey", "not enough data"}
+    assert "explanation" in result
+    assert isinstance(result["comparable_count"], int)
+
+
+def test_compare_price_handles_no_comparables(monkeypatch):
+    item = {
+        "id": "only_item",
+        "title": "One-off cape",
+        "description": "A one of one piece",
+        "category": "costume",
+        "style_tags": ["rare"],
+        "size": "M",
+        "condition": "good",
+        "price": 99.0,
+        "colors": ["silver"],
+        "brand": None,
+        "platform": "depop",
+    }
+    monkeypatch.setattr(tools, "load_listings", lambda: [item])
+
+    result = compare_price(item)
+
+    assert result["verdict"] == "not enough data"
+    assert result["comparable_count"] == 0

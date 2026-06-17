@@ -216,6 +216,97 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         return ""
 
 
+def compare_price(item: dict) -> dict:
+    """
+    Estimate whether the selected listing is a good deal, fair price, or pricey
+    compared with similar items in the mock listings dataset.
+    """
+    if not item or item.get("price") is None:
+        return {
+            "selected_price": None,
+            "average_price": None,
+            "median_price": None,
+            "comparable_count": 0,
+            "verdict": "not enough data",
+            "explanation": "No selected item price was available to compare.",
+        }
+
+    selected_price = float(item["price"])
+    item_tags = set(item.get("style_tags", []))
+    item_colors = set(item.get("colors", []))
+
+    comparables = []
+    for listing in load_listings():
+        if listing.get("id") == item.get("id"):
+            continue
+        if listing.get("category") != item.get("category"):
+            continue
+
+        listing_tags = set(listing.get("style_tags", []))
+        listing_colors = set(listing.get("colors", []))
+        if item_tags & listing_tags or item_colors & listing_colors:
+            comparables.append(listing)
+
+    if not comparables:
+        comparables = [
+            listing
+            for listing in load_listings()
+            if listing.get("id") != item.get("id")
+            and listing.get("category") == item.get("category")
+        ]
+
+    prices = sorted(
+        float(listing["price"])
+        for listing in comparables
+        if listing.get("price") is not None
+    )
+    if not prices:
+        return {
+            "selected_price": selected_price,
+            "average_price": None,
+            "median_price": None,
+            "comparable_count": 0,
+            "verdict": "not enough data",
+            "explanation": "There were no comparable listings available for a price check.",
+        }
+
+    average_price = round(sum(prices) / len(prices), 2)
+    midpoint = len(prices) // 2
+    if len(prices) % 2:
+        median_price = prices[midpoint]
+    else:
+        median_price = round((prices[midpoint - 1] + prices[midpoint]) / 2, 2)
+
+    category = item.get("category", "items")
+    if selected_price <= median_price * 0.9:
+        verdict = "good deal"
+        explanation = (
+            f"This ${selected_price:.2f} listing is below the ${median_price:.2f} "
+            f"median for {len(prices)} comparable {category} listings."
+        )
+    elif selected_price >= median_price * 1.15:
+        verdict = "pricey"
+        explanation = (
+            f"This ${selected_price:.2f} listing is above the ${median_price:.2f} "
+            f"median for {len(prices)} comparable {category} listings."
+        )
+    else:
+        verdict = "fair price"
+        explanation = (
+            f"This ${selected_price:.2f} listing is close to the ${median_price:.2f} "
+            f"median for {len(prices)} comparable {category} listings."
+        )
+
+    return {
+        "selected_price": selected_price,
+        "average_price": average_price,
+        "median_price": median_price,
+        "comparable_count": len(prices),
+        "verdict": verdict,
+        "explanation": explanation,
+    }
+
+
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
 
 def create_fit_card(outfit: str, new_item: dict) -> str:

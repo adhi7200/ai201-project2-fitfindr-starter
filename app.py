@@ -69,6 +69,25 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
         f"{item['description']}"
     )
 
+    if session.get("search_fallbacks"):
+        listing_text += "\n\nSearch adjustment:\n"
+        listing_text += "\n".join(f"- {note}" for note in session["search_fallbacks"])
+
+    price_comparison = session.get("price_comparison")
+    if price_comparison:
+        listing_text += (
+            "\n\nPrice check:\n"
+            f"Verdict: {price_comparison['verdict']}\n"
+            f"Selected price: ${price_comparison['selected_price']:.2f}\n"
+        )
+        if price_comparison["median_price"] is not None:
+            listing_text += (
+                f"Comparable median: ${price_comparison['median_price']:.2f}\n"
+                f"Comparable average: ${price_comparison['average_price']:.2f}\n"
+                f"Comparable listings: {price_comparison['comparable_count']}\n"
+            )
+        listing_text += price_comparison["explanation"]
+
     return listing_text, session["outfit_suggestion"], session["fit_card"]
 
 

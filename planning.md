@@ -92,7 +92,27 @@ Takes the outfit suggestion string from `suggest_outfit` and the selected listin
 
 ### Additional Tools
 
-No additional tools for the required version. I will update this section before starting any stretch features.
+### Tool 4: compare_price
+
+**What it does:**
+Estimates whether the selected listing is a good deal, fair price, or pricey compared with similar items in `data/listings.json`. Similar listings are chosen from the same category first, then narrowed by overlapping style tags and colors when possible.
+
+**Input parameters:**
+- `item` (dict): The selected listing dict from `search_listings`, containing `id`, `title`, `description`, `category`, `style_tags`, `size`, `condition`, `price`, `colors`, `brand`, and `platform`.
+
+**What it returns:**
+- A dict with:
+  - `selected_price` (float): the selected item's price
+  - `average_price` (float or None): average price among comparable listings
+  - `median_price` (float or None): median price among comparable listings
+  - `comparable_count` (int): number of comparable listings used
+  - `verdict` (str): `"good deal"`, `"fair price"`, `"pricey"`, or `"not enough data"`
+  - `explanation` (str): one short sentence explaining the verdict
+
+**What happens if it fails or returns nothing:**
+- If no comparable listings are available, the tool returns a low-confidence result with `verdict = "not enough data"` instead of raising an exception.
+- The agent still continues to `suggest_outfit` and `create_fit_card`; price comparison is helpful context, not a blocking step.
+
 
 ---
 
@@ -114,10 +134,19 @@ The planning loop runs in `run_agent(query, wardrobe)` in `agent.py`. It branche
 3. **Call `search_listings`**
    - Invoke `search_listings(description, size, max_price)`.
    - Store the result list in `session["search_results"]`.
-   - If the list is empty, set `session["error"]` and return early.
+   - If the list is empty, retry with loosened constraints before returning an error:
+     - If `size` was provided, call `search_listings(description, None, max_price)` and record that the size filter was removed.
+     - If results are still empty and `max_price` was provided, call `search_listings(description, None, None)` and record that the price ceiling was removed.
+     - Store all successful or attempted fallback notes in `session["search_fallbacks"]`.
+   - If all search attempts are empty, set `session["error"]` and return early.
    - If the list is not empty, store the first result in `session["selected_item"]`.
 
-4. **Call `suggest_outfit`**
+4. **Call `compare_price`**
+   - Invoke `compare_price(session["selected_item"])`.
+   - Store the returned dict in `session["price_comparison"]`.
+   - Continue even if the verdict is `"not enough data"`.
+
+5. **Call `suggest_outfit`**
    - Invoke `suggest_outfit(session["selected_item"], session["wardrobe"])`.
    - If the returned string is non-empty, store it in `session["outfit_suggestion"]`.
    - If the returned string is empty or an LLM error prevents useful output, retry once:
@@ -127,7 +156,7 @@ The planning loop runs in `run_agent(query, wardrobe)` in `agent.py`. It branche
      - Call `suggest_outfit` again with the alternate listing.
      - If the second attempt fails, set the outfit error and return early.
 
-5. **Call `create_fit_card`**
+6. **Call `create_fit_card`**
    - Invoke `create_fit_card(session["outfit_suggestion"], session["selected_item"])`.
    - If the returned caption is non-empty, store it in `session["fit_card"]` and return the completed session.
    - If the caption is empty or an error message, set `session["error"]` and return the session.
@@ -155,6 +184,8 @@ session = {
     "fit_card": str | None,
     "error": str | None,
     "retry_count": int,            # 0 normally, 1 after the one allowed suggest_outfit retry.
+    "search_fallbacks": list[str],  # Notes about loosened search constraints, if any.
+    "price_comparison": dict | None # Result from compare_price(selected_item).
 }
 ```
 
@@ -162,11 +193,13 @@ session = {
 1. `run_agent()` initializes the session.
 2. Query parsing writes `description`, `size`, and `max_price` into `session["parsed"]`.
 3. `search_listings()` returns matching listings, which are stored in `session["search_results"]`.
-4. The agent chooses a listing and stores it in `session["selected_item"]`.
-5. `suggest_outfit()` receives `session["selected_item"]` and `session["wardrobe"]`.
-6. If the first outfit attempt fails, the agent updates `session["selected_item"]` to the next listing and retries once.
-7. `create_fit_card()` receives `session["outfit_suggestion"]` and `session["selected_item"]`.
-8. If any step fails, `session["error"]` is set and later dependent tools are not called.
+4. If the first search fails, fallback search notes are stored in `session["search_fallbacks"]`.
+5. The agent chooses a listing and stores it in `session["selected_item"]`.
+6. `compare_price()` receives `session["selected_item"]`, and the result is stored in `session["price_comparison"]`.
+7. `suggest_outfit()` receives `session["selected_item"]` and `session["wardrobe"]`.
+8. If the first outfit attempt fails, the agent updates `session["selected_item"]` to the next listing and retries once.
+9. `create_fit_card()` receives `session["outfit_suggestion"]` and `session["selected_item"]`.
+10. If any required step fails, `session["error"]` is set and later dependent tools are not called.
 
 **Tool access pattern:**
 - Tools are pure function-style helpers: they accept arguments and return values.
@@ -181,7 +214,8 @@ For each tool, describe the specific failure mode being handled and what the age
 
 | Tool | Failure mode | Agent response |
 |------|--------------|----------------|
-| `search_listings` | No listings match the query and the tool returns `[]`. | Set `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."` and return early. Do not call `suggest_outfit` or `create_fit_card`. |
+| `search_listings` | No listings match the query and the tool returns `[]`. | Retry once without the size filter if size was provided, then retry once without the price ceiling if needed. Record each adjustment in `session["search_fallbacks"]`. If all attempts fail, set `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."` and return early. |
+| `compare_price` | No comparable listings are available. | Return `verdict = "not enough data"` with an explanation. The agent stores the result and continues because price comparison is not required for outfit generation. |
 | `suggest_outfit` first attempt | LLM call fails, raises an exception caught by the agent, or returns an empty/whitespace string. | If another listing exists in `session["search_results"]`, set `retry_count` to 1, update `selected_item` to the alternate listing, and call `suggest_outfit` one more time. |
 | `suggest_outfit` second attempt | Retry also fails or there is no alternate listing to try. | Set `session["error"]` to `"Unable to build a complete outfit with your wardrobe and available listings. Try a different search."` and return early. |
 | `suggest_outfit` with empty wardrobe | `wardrobe["items"]` is empty. | This is not an error. The tool asks the LLM for general styling advice and the workflow continues to `create_fit_card`. |
@@ -199,9 +233,14 @@ flowchart TB
     C --> D["Parse description, size, max_price"]
     D --> E["search_listings(description, size, max_price)"]
     E --> F{"Any results?"}
-    F -- "No" --> X["Set session error and return"]
+    F -- "No" --> F1{"Can loosen constraints?"}
+    F1 -- "Yes" --> F2["Retry without size and/or price ceiling; store search_fallbacks"]
+    F2 --> E
+    F1 -- "No" --> X["Set session error and return"]
     F -- "Yes" --> G["Store search_results and selected_item = results[0]"]
-    G --> H["suggest_outfit(selected_item, wardrobe)"]
+    G --> G1["compare_price(selected_item)"]
+    G1 --> G2["Store price_comparison"]
+    G2 --> H["suggest_outfit(selected_item, wardrobe)"]
     H --> I{"Outfit text valid?"}
     I -- "Yes" --> J["Store outfit_suggestion"]
     I -- "No" --> K{"retry_count == 0 and another listing exists?"}
@@ -217,7 +256,8 @@ flowchart TB
 
 **Key flow points:**
 - All decisions happen in the `run_agent()` planning loop in `agent.py`.
-- `search_listings` must succeed before `suggest_outfit` runs.
+- `search_listings` gets a limited fallback path before the agent returns a no-results error.
+- `compare_price` runs after the selected listing is chosen and does not block the workflow.
 - `suggest_outfit` gets one retry with another matched listing if the first outfit attempt fails.
 - `create_fit_card` only runs after a valid outfit suggestion exists.
 - Error paths return early with `session["error"]` populated.

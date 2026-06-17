@@ -18,7 +18,7 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card
+from tools import search_listings, suggest_outfit, create_fit_card, compare_price
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -42,6 +42,8 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "outfit_suggestion": None,   # string returned by suggest_outfit
         "fit_card": None,            # string returned by create_fit_card
         "error": None,               # set if the interaction ended early
+        "search_fallbacks": [],       # notes about loosened search constraints
+        "price_comparison": None,     # dict returned by compare_price
     }
 
 
@@ -146,12 +148,26 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     }
 
     results = search_listings(description, size=size, max_price=max_price)
+
+    if not results and size is not None:
+        session["search_fallbacks"].append(
+            f"No matches found in size {size}; removed the size filter."
+        )
+        results = search_listings(description, size=None, max_price=max_price)
+
+    if not results and max_price is not None:
+        session["search_fallbacks"].append(
+            f"No matches found under ${max_price:.2f}; removed the price ceiling."
+        )
+        results = search_listings(description, size=None, max_price=None)
+
     session["search_results"] = results
     if not results:
         session["error"] = "No matching listings were found for that description and price range. Try a different search."
         return session
 
     session["selected_item"] = results[0]
+    session["price_comparison"] = compare_price(session["selected_item"])
 
     outfit = suggest_outfit(session["selected_item"], session["wardrobe"])
     if not outfit or not outfit.strip():
@@ -161,6 +177,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
         session["retry_count"] = 1
         session["selected_item"] = results[1]
+        session["price_comparison"] = compare_price(session["selected_item"])
         outfit = suggest_outfit(session["selected_item"], session["wardrobe"])
 
         if not outfit or not outfit.strip():
