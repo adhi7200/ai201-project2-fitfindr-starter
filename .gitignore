@@ -12,5 +12,5 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-instructions.txt
+instructions.md
 data/style_profile_memory.json

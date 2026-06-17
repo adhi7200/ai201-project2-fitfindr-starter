@@ -27,6 +27,7 @@ def test_run_agent_retries_search_without_size(monkeypatch):
 
     monkeypatch.setattr(agent, "search_listings", fake_search)
     monkeypatch.setattr(agent, "compare_price", lambda selected: {"verdict": "fair price"})
+    monkeypatch.setattr(agent, "check_trends", lambda description, size=None, item=None: {"matched_trends": ["Neo-grunge"]})
     monkeypatch.setattr(agent, "load_style_profile", lambda: {"style_tags": [], "colors": [], "categories": []})
     monkeypatch.setattr(agent, "update_style_profile", lambda query, selected, wardrobe: {
         "style_tags": selected["style_tags"],
@@ -76,6 +77,7 @@ def test_run_agent_stores_style_profile_note(monkeypatch):
 
     monkeypatch.setattr(agent, "search_listings", lambda *args, **kwargs: [item])
     monkeypatch.setattr(agent, "compare_price", lambda selected: {"verdict": "fair price"})
+    monkeypatch.setattr(agent, "check_trends", lambda description, size=None, item=None: {"matched_trends": ["Neo-grunge"]})
     monkeypatch.setattr(agent, "load_style_profile", lambda: {"style_tags": [], "colors": [], "categories": []})
     monkeypatch.setattr(agent, "update_style_profile", lambda query, selected, wardrobe: {
         "style_tags": ["streetwear"],
@@ -89,3 +91,48 @@ def test_run_agent_stores_style_profile_note(monkeypatch):
 
     assert session["style_profile"]["style_tags"] == ["streetwear"]
     assert "Style memory used" in session["style_profile_note"]
+
+
+def test_run_agent_stores_trend_awareness(monkeypatch):
+    item = {
+        "id": "lst_test",
+        "title": "Test Graphic Tee",
+        "description": "A test tee",
+        "category": "tops",
+        "style_tags": ["graphic tee", "grunge"],
+        "size": "M",
+        "condition": "good",
+        "price": 20.0,
+        "colors": ["black"],
+        "brand": None,
+        "platform": "depop",
+    }
+    captured = {}
+
+    monkeypatch.setattr(agent, "search_listings", lambda *args, **kwargs: [item])
+    monkeypatch.setattr(agent, "compare_price", lambda selected: {"verdict": "fair price"})
+    monkeypatch.setattr(agent, "check_trends", lambda description, size=None, item=None: {
+        "matched_trends": ["Neo-grunge"],
+        "trend_tags": ["grunge"],
+        "confidence": "high",
+        "style_note": "Use darker layers.",
+        "source": "test",
+    })
+    monkeypatch.setattr(agent, "load_style_profile", lambda: {"style_tags": [], "colors": [], "categories": []})
+    monkeypatch.setattr(agent, "update_style_profile", lambda query, selected, wardrobe: {
+        "style_tags": selected["style_tags"],
+        "colors": selected["colors"],
+        "categories": [selected["category"]],
+    })
+
+    def fake_suggest(selected, wardrobe):
+        captured["trend_awareness"] = wardrobe["_trend_awareness"]
+        return "Wear it with jeans."
+
+    monkeypatch.setattr(agent, "suggest_outfit", fake_suggest)
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, selected: "A relaxed thrifted fit.")
+
+    session = run_agent("graphic tee under $25", get_example_wardrobe())
+
+    assert session["trend_awareness"]["matched_trends"] == ["Neo-grunge"]
+    assert captured["trend_awareness"] == session["trend_awareness"]

@@ -1,6 +1,7 @@
 
 import tools
 from tools import (
+    check_trends,
     compare_price,
     create_fit_card,
     load_style_profile,
@@ -218,3 +219,65 @@ def test_suggest_outfit_includes_style_profile_memory(monkeypatch):
     assert result.strip() != ""
     assert "Style profile memory" in captured["prompt"]
     assert "vintage" in captured["prompt"]
+
+
+def test_check_trends_returns_matching_context():
+    item = search_listings("vintage graphic tee", size=None, max_price=50)[0]
+
+    result = check_trends("vintage graphic tee", size=None, item=item)
+
+    assert result["confidence"] in {"medium", "high"}
+    assert "Neo-grunge" in result["matched_trends"]
+    assert "style_note" in result
+    assert "source" in result
+
+
+def test_check_trends_handles_unknown_input():
+    result = check_trends("museum docent cape", size="M", item={})
+
+    assert result["confidence"] == "low"
+    assert result["matched_trends"] == []
+    assert "grounded" in result["style_note"]
+
+
+def test_suggest_outfit_includes_trend_awareness(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["prompt"] = kwargs["messages"][1]["content"]
+
+            class Message:
+                content = "Use the trend note to style it with darker layers."
+
+            class Choice:
+                message = Message()
+
+            class Response:
+                choices = [Choice()]
+
+            return Response()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: FakeClient())
+
+    item = search_listings("vintage graphic tee", size=None, max_price=50)[0]
+    wardrobe = get_example_wardrobe()
+    wardrobe["_trend_awareness"] = {
+        "matched_trends": ["Neo-grunge"],
+        "trend_tags": ["grunge", "streetwear"],
+        "confidence": "high",
+        "style_note": "Use faded graphics and grounded shoes.",
+        "source": "test",
+    }
+
+    result = suggest_outfit(item, wardrobe)
+
+    assert result.strip() != ""
+    assert "Trend awareness" in captured["prompt"]
+    assert "Neo-grunge" in captured["prompt"]

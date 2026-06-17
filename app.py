@@ -91,6 +91,16 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
     outfit_text = session["outfit_suggestion"]
     if session.get("style_profile_note"):
         outfit_text += f"\n\n{session['style_profile_note']}"
+    if session.get("trend_awareness"):
+        trend = session["trend_awareness"]
+        matched_trends = ", ".join(trend.get("matched_trends", [])) or "No strong match"
+        trend_tags = ", ".join(trend.get("trend_tags", [])) or "none"
+        outfit_text += (
+            "\n\nTrend awareness:\n"
+            f"Matched: {matched_trends}\n"
+            f"Tags: {trend_tags}\n"
+            f"{trend.get('style_note', '')}"
+        )
 
     return listing_text, outfit_text, session["fit_card"]
 

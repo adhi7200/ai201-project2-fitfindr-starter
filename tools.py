@@ -36,6 +36,128 @@ DEFAULT_STYLE_PROFILE = {
     "last_selected_item_ids": [],
 }
 
+TREND_SOURCE_NOTE = (
+    "Curated local trend map based on public resale and fashion trend reporting; "
+    "kept offline for a stable demo."
+)
+
+TREND_MAP = [
+    {
+        "name": "Y2K nostalgia",
+        "keywords": [
+            "y2k",
+            "2000s",
+            "baby tee",
+            "butterfly",
+            "cargo",
+            "platform",
+            "mesh",
+            "low-rise",
+            "shoulder bag",
+        ],
+        "trend_tags": ["y2k", "playful", "2000s"],
+        "style_note": (
+            "Lean into Y2K nostalgia with compact proportions, glossy details, "
+            "and one clean basic so the outfit still feels wearable."
+        ),
+    },
+    {
+        "name": "Neo-grunge",
+        "keywords": [
+            "grunge",
+            "band tee",
+            "graphic tee",
+            "flannel",
+            "mesh",
+            "black",
+            "charcoal",
+            "combat",
+            "rock",
+            "distressed",
+        ],
+        "trend_tags": ["grunge", "worn-in", "streetwear"],
+        "style_note": (
+            "Use the current grunge revival as direction: faded graphics, darker "
+            "layers, and grounded shoes should make the look intentional rather "
+            "than costume-like."
+        ),
+    },
+    {
+        "name": "Sporty vintage",
+        "keywords": [
+            "90s",
+            "track",
+            "athletic",
+            "windbreaker",
+            "sneakers",
+            "biker shorts",
+            "college",
+            "color block",
+        ],
+        "trend_tags": ["sporty", "90s", "casual"],
+        "style_note": (
+            "Pull from sporty vintage styling with relaxed layers, clean sneakers, "
+            "and one structured piece to keep the outfit sharp."
+        ),
+    },
+    {
+        "name": "Soft utility",
+        "keywords": [
+            "linen",
+            "minimal",
+            "earth tones",
+            "trousers",
+            "olive",
+            "khaki",
+            "canvas",
+            "classic",
+            "wide-leg",
+        ],
+        "trend_tags": ["minimal", "utility", "earth tones"],
+        "style_note": (
+            "Keep it in the soft utility lane: natural colors, easy structure, "
+            "and practical layers that look polished without feeling formal."
+        ),
+    },
+    {
+        "name": "Romantic vintage",
+        "keywords": [
+            "cottagecore",
+            "floral",
+            "crochet",
+            "silk",
+            "slip",
+            "feminine",
+            "boho",
+            "pastel",
+            "cream",
+        ],
+        "trend_tags": ["romantic", "vintage", "soft"],
+        "style_note": (
+            "Let romantic vintage guide the outfit with softer textures, delicate "
+            "colors, and one grounded layer or shoe for balance."
+        ),
+    },
+    {
+        "name": "Modern prep",
+        "keywords": [
+            "preppy",
+            "polo",
+            "argyle",
+            "knit vest",
+            "blazer",
+            "button-down",
+            "classic",
+            "dark academia",
+        ],
+        "trend_tags": ["preppy", "classic", "layered"],
+        "style_note": (
+            "Use modern prep as the styling cue: crisp layers, tidy proportions, "
+            "and one relaxed piece so it does not feel too buttoned-up."
+        ),
+    },
+]
+
 
 # ── Groq client ───────────────────────────────────────────────────────────────
 
@@ -174,6 +296,7 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     wardrobe_context = wardrobe or {}
     wardrobe_items = wardrobe_context.get("items", [])
     style_profile = wardrobe_context.get("_style_profile") or {}
+    trend_awareness = wardrobe_context.get("_trend_awareness") or {}
     item_summary = (
         f"{new_item.get('title', 'Selected item')} "
         f"({new_item.get('category', 'unknown category')}, "
@@ -193,6 +316,18 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     if profile_parts:
         profile_text = "\nStyle profile memory:\n" + "; ".join(profile_parts) + "\n"
 
+    trend_text = ""
+    if trend_awareness.get("style_note"):
+        trend_names = ", ".join(trend_awareness.get("matched_trends", []))
+        trend_tags = ", ".join(trend_awareness.get("trend_tags", []))
+        trend_text = (
+            "\nTrend awareness:\n"
+            f"{trend_awareness['style_note']}\n"
+            f"Matched trends: {trend_names or 'no strong match'}; "
+            f"trend tags: {trend_tags or 'none'}.\n"
+            "Let this trend context visibly influence the outfit suggestion.\n"
+        )
+
     if wardrobe_items:
         wardrobe_text = "\n".join(
             "- "
@@ -209,6 +344,7 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
             "User wardrobe:\n"
             f"{wardrobe_text}\n\n"
             f"{profile_text}"
+            f"{trend_text}"
             "Suggest 1-2 complete outfits that use the new item and named "
             "pieces from the wardrobe. Include why the colors, silhouette, "
             "and style work together. Keep it practical and specific."
@@ -218,6 +354,7 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
             "New thrifted item:\n"
             f"{item_summary}\n\n"
             f"{profile_text}"
+            f"{trend_text}"
             "The user has not added wardrobe items yet. Suggest 1-2 ways to "
             "style this item using common basics, including colors, silhouettes, "
             "shoes, and accessories that would work well."
@@ -382,6 +519,90 @@ def update_style_profile(query: str, selected_item: dict, wardrobe: dict | None 
         pass
 
     return profile
+
+
+def check_trends(
+    description: str,
+    size: str | None = None,
+    item: dict | None = None,
+) -> dict:
+    """
+    Return trend context that can influence the outfit suggestion.
+
+    The trend source is a curated local map instead of a live platform scrape,
+    which keeps the demo repeatable while still showing trend-aware behavior.
+    """
+    import re
+
+    item = item or {}
+    searchable_parts = [
+        description or "",
+        size or "",
+        item.get("title", ""),
+        item.get("description", ""),
+        item.get("category", ""),
+        " ".join(item.get("style_tags", [])),
+        " ".join(item.get("colors", [])),
+        item.get("brand") or "",
+    ]
+    searchable_text = " ".join(searchable_parts).lower()
+    searchable_words = set(re.findall(r"[a-z0-9-]+", searchable_text))
+
+    scored_trends = []
+    for trend in TREND_MAP:
+        score = 0
+        matched_keywords = []
+        for keyword in trend["keywords"]:
+            keyword_lower = keyword.lower()
+            if " " in keyword_lower:
+                matched = keyword_lower in searchable_text
+            else:
+                matched = keyword_lower in searchable_words
+            if matched:
+                score += 2 if " " in keyword_lower else 1
+                matched_keywords.append(keyword)
+
+        if score:
+            scored_trends.append((score, trend["name"], trend, matched_keywords))
+
+    scored_trends.sort(key=lambda result: (-result[0], result[1]))
+
+    if not scored_trends:
+        return {
+            "matched_trends": [],
+            "trend_tags": [],
+            "confidence": "low",
+            "style_note": (
+                "No strong trend match was found, so keep the outfit grounded "
+                "in the item's actual color, category, and silhouette."
+            ),
+            "source": TREND_SOURCE_NOTE,
+        }
+
+    top_matches = scored_trends[:2]
+    total_score = sum(score for score, _, _, _ in top_matches)
+    confidence = "high" if total_score >= 4 else "medium"
+    trend_tags = []
+    matched_keywords = []
+    style_notes = []
+    for _, _, trend, keywords in top_matches:
+        for tag in trend["trend_tags"]:
+            if tag not in trend_tags:
+                trend_tags.append(tag)
+        for keyword in keywords:
+            if keyword not in matched_keywords:
+                matched_keywords.append(keyword)
+        style_notes.append(trend["style_note"])
+
+    size_note = f" Size context: {size}." if size else ""
+    return {
+        "matched_trends": [trend["name"] for _, _, trend, _ in top_matches],
+        "trend_tags": trend_tags[:6],
+        "confidence": confidence,
+        "matched_keywords": matched_keywords[:8],
+        "style_note": " ".join(style_notes) + size_note,
+        "source": TREND_SOURCE_NOTE,
+    }
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────

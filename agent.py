@@ -23,6 +23,7 @@ from tools import (
     suggest_outfit,
     create_fit_card,
     compare_price,
+    check_trends,
     load_style_profile,
     update_style_profile,
 )
@@ -53,6 +54,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "price_comparison": None,     # dict returned by compare_price
         "style_profile": {},          # local persistent style memory
         "style_profile_note": None,   # short display note about memory
+        "trend_awareness": None,       # dict returned by check_trends
     }
 
 
@@ -188,6 +190,11 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     session["selected_item"] = results[0]
     session["price_comparison"] = compare_price(session["selected_item"])
+    session["trend_awareness"] = check_trends(
+        description,
+        size=size,
+        item=session["selected_item"],
+    )
     session["style_profile"] = update_style_profile(
         session["query"],
         session["selected_item"],
@@ -197,6 +204,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     wardrobe_context = dict(session["wardrobe"] or {})
     wardrobe_context["_style_profile"] = session["style_profile"]
+    wardrobe_context["_trend_awareness"] = session["trend_awareness"]
 
     outfit = suggest_outfit(session["selected_item"], wardrobe_context)
     if not outfit or not outfit.strip():
@@ -207,6 +215,11 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         session["retry_count"] = 1
         session["selected_item"] = results[1]
         session["price_comparison"] = compare_price(session["selected_item"])
+        session["trend_awareness"] = check_trends(
+            description,
+            size=size,
+            item=session["selected_item"],
+        )
         session["style_profile"] = update_style_profile(
             session["query"],
             session["selected_item"],
@@ -215,6 +228,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         session["style_profile_note"] = style_profile_note(session["style_profile"])
         wardrobe_context = dict(session["wardrobe"] or {})
         wardrobe_context["_style_profile"] = session["style_profile"]
+        wardrobe_context["_trend_awareness"] = session["trend_awareness"]
         outfit = suggest_outfit(session["selected_item"], wardrobe_context)
 
         if not outfit or not outfit.strip():

@@ -30,7 +30,9 @@ Searches `data/listings.json` for secondhand listings that match the user's item
 
 **What happens if it fails or returns nothing:**
 - The tool itself returns `[]` instead of raising an exception for no matches.
-- The agent sets `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."` and returns early without calling `suggest_outfit` or `create_fit_card`.
+- The agent first retries with loosened constraints: remove the size filter if one was provided, then remove the price ceiling if results are still empty.
+- The agent stores each adjustment in `session["search_fallbacks"]` so the user can see what changed.
+- If every search attempt still returns `[]`, the agent sets `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."` and returns early without calling `suggest_outfit` or `create_fit_card`.
 
 ---
 
@@ -134,6 +136,29 @@ Persists lightweight style preferences across runs so the agent can remember rep
 - If the memory file is missing, empty, or unreadable, the tool returns a default empty profile.
 - If the memory file cannot be written, the agent continues the normal workflow without blocking outfit generation.
 
+### Tool 6: check_trends
+
+**What it does:**
+Returns trend context for the selected listing using a curated local trend map based on public resale and fashion trend reporting. The tool is offline and deterministic so the demo does not depend on live scraping.
+
+**Input parameters:**
+- `description` (str): The parsed search description, such as `"vintage graphic tee"` or `"90s track jacket"`.
+- `size` (str or None): The parsed size filter, used only as extra context in the trend note.
+- `item` (dict or None): The selected listing dict from `search_listings`.
+
+**What it returns:**
+- A dict with:
+  - `matched_trends` (list[str]): trend names such as `"Neo-grunge"` or `"Sporty vintage"`.
+  - `trend_tags` (list[str]): short tags passed into outfit generation.
+  - `confidence` (str): `"high"`, `"medium"`, or `"low"`.
+  - `matched_keywords` (list[str]): keywords that triggered the trend match when available.
+  - `style_note` (str): a styling direction used by `suggest_outfit`.
+  - `source` (str): a short note describing the curated local data source.
+
+**What happens if it fails or returns nothing:**
+- If no trend keywords match, the tool returns `confidence = "low"` with a generic styling note based on the item itself.
+- The agent still continues to outfit generation because trend awareness is helpful context, not a blocking requirement.
+
 
 ---
 
@@ -168,23 +193,29 @@ The planning loop runs in `run_agent(query, wardrobe)` in `agent.py`. It branche
    - Store the returned dict in `session["price_comparison"]`.
    - Continue even if the verdict is `"not enough data"`.
 
-5. **Update and use style profile memory**
+5. **Call `check_trends`**
+   - Invoke `check_trends(description, size, session["selected_item"])`.
+   - Store the returned dict in `session["trend_awareness"]`.
+   - Continue even if confidence is `"low"`.
+
+6. **Update and use style profile memory**
    - Call `update_style_profile(session["query"], session["selected_item"], session["wardrobe"])`.
    - Store the returned profile in `session["style_profile"]`.
-   - Add the style profile to the wardrobe context passed into `suggest_outfit`.
+   - Add the style profile and trend awareness to the wardrobe context passed into `suggest_outfit`.
    - Store a short display summary in `session["style_profile_note"]`.
 
-6. **Call `suggest_outfit`**
-   - Invoke `suggest_outfit(session["selected_item"], wardrobe_with_style_profile)`.
+7. **Call `suggest_outfit`**
+   - Invoke `suggest_outfit(session["selected_item"], wardrobe_with_style_profile_and_trends)`.
    - If the returned string is non-empty, store it in `session["outfit_suggestion"]`.
    - If the returned string is empty or an LLM error prevents useful output, retry once:
      - Set `session["retry_count"] = 1`.
      - Select the next unused item from `session["search_results"]`.
+     - Re-run `compare_price`, `check_trends`, and `update_style_profile` for the alternate listing.
      - If no alternate listing exists, set the outfit error and return early.
      - Call `suggest_outfit` again with the alternate listing.
      - If the second attempt fails, set the outfit error and return early.
 
-7. **Call `create_fit_card`**
+8. **Call `create_fit_card`**
    - Invoke `create_fit_card(session["outfit_suggestion"], session["selected_item"])`.
    - If the returned caption is non-empty, store it in `session["fit_card"]` and return the completed session.
    - If the caption is empty or an error message, set `session["error"]` and return the session.
@@ -215,7 +246,8 @@ session = {
     "search_fallbacks": list[str],  # Notes about loosened search constraints, if any.
     "price_comparison": dict | None, # Result from compare_price(selected_item).
     "style_profile": dict,          # Persistent local style memory.
-    "style_profile_note": str | None # Short display summary of memory used.
+    "style_profile_note": str | None, # Short display summary of memory used.
+    "trend_awareness": dict | None   # Result from check_trends(description, size, selected_item).
 }
 ```
 
@@ -226,11 +258,12 @@ session = {
 4. If the first search fails, fallback search notes are stored in `session["search_fallbacks"]`.
 5. The agent chooses a listing and stores it in `session["selected_item"]`.
 6. `compare_price()` receives `session["selected_item"]`, and the result is stored in `session["price_comparison"]`.
-7. `update_style_profile()` saves style tags, colors, category, recent query text, and selected listing id.
-8. `suggest_outfit()` receives `session["selected_item"]`, `session["wardrobe"]`, and the loaded style profile as extra context.
-9. If the first outfit attempt fails, the agent updates `session["selected_item"]` to the next listing and retries once.
-10. `create_fit_card()` receives `session["outfit_suggestion"]` and `session["selected_item"]`.
-11. If any required step fails, `session["error"]` is set and later dependent tools are not called.
+7. `check_trends()` receives the parsed description, parsed size, and selected listing, and stores trend context in `session["trend_awareness"]`.
+8. `update_style_profile()` saves style tags, colors, category, recent query text, and selected listing id.
+9. `suggest_outfit()` receives `session["selected_item"]`, `session["wardrobe"]`, the loaded style profile, and trend awareness as extra context.
+10. If the first outfit attempt fails, the agent updates `session["selected_item"]` to the next listing, refreshes price, trend, and memory state, then retries once.
+11. `create_fit_card()` receives `session["outfit_suggestion"]` and `session["selected_item"]`.
+12. If any required step fails, `session["error"]` is set and later dependent tools are not called.
 
 **Tool access pattern:**
 - Tools are pure function-style helpers: they accept arguments and return values.
@@ -248,6 +281,7 @@ For each tool, describe the specific failure mode being handled and what the age
 | `search_listings` | No listings match the query and the tool returns `[]`. | Retry once without the size filter if size was provided, then retry once without the price ceiling if needed. Record each adjustment in `session["search_fallbacks"]`. If all attempts fail, set `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."` and return early. |
 | `compare_price` | No comparable listings are available. | Return `verdict = "not enough data"` with an explanation. The agent stores the result and continues because price comparison is not required for outfit generation. |
 | `style profile memory` | The memory file is missing, unreadable, or cannot be written. | Use a default empty style profile and continue the workflow. Memory improves personalization, but it is not required for search, outfit generation, or fit card creation. |
+| `check_trends` | No trend keywords match the query or selected item. | Return `confidence = "low"` with a generic item-based styling note. The agent stores the result and continues to `suggest_outfit`. |
 | `suggest_outfit` first attempt | LLM call fails, raises an exception caught by the agent, or returns an empty/whitespace string. | If another listing exists in `session["search_results"]`, set `retry_count` to 1, update `selected_item` to the alternate listing, and call `suggest_outfit` one more time. |
 | `suggest_outfit` second attempt | Retry also fails or there is no alternate listing to try. | Set `session["error"]` to `"Unable to build a complete outfit with your wardrobe and available listings. Try a different search."` and return early. |
 | `suggest_outfit` with empty wardrobe | `wardrobe["items"]` is empty. | This is not an error. The tool asks the LLM for general styling advice and the workflow continues to `create_fit_card`. |
@@ -272,8 +306,10 @@ flowchart TB
     F -- "Yes" --> G["Store search_results and selected_item = results[0]"]
     G --> G1["compare_price(selected_item)"]
     G1 --> G2["Store price_comparison"]
-    G2 --> G3["load/update style_profile memory"]
-    G3 --> H["suggest_outfit(selected_item, wardrobe + style_profile)"]
+    G2 --> G3["check_trends(description, size, selected_item)"]
+    G3 --> G4["Store trend_awareness"]
+    G4 --> G5["load/update style_profile memory"]
+    G5 --> H["suggest_outfit(selected_item, wardrobe + style_profile + trend_awareness)"]
     H --> I{"Outfit text valid?"}
     I -- "Yes" --> J["Store outfit_suggestion"]
     I -- "No" --> K{"retry_count == 0 and another listing exists?"}
@@ -291,6 +327,7 @@ flowchart TB
 - All decisions happen in the `run_agent()` planning loop in `agent.py`.
 - `search_listings` gets a limited fallback path before the agent returns a no-results error.
 - `compare_price` runs after the selected listing is chosen and does not block the workflow.
+- `check_trends` runs after the selected listing is chosen and adds curated trend context to outfit generation.
 - Style profile memory loads at the start of the session, updates after item selection, and adds preference context to outfit generation.
 - `suggest_outfit` gets one retry with another matched listing if the first outfit attempt fails.
 - `create_fit_card` only runs after a valid outfit suggestion exists.
@@ -376,19 +413,36 @@ Write out what a full user interaction looks like from start to finish - tool ca
 - Agent stores the full results list in `session["search_results"]`.
 - Agent stores the first listing in `session["selected_item"]`.
 
-**Step 2 - `suggest_outfit`:**
-- Agent calls `suggest_outfit(session["selected_item"], session["wardrobe"])`.
+**Step 2 - `compare_price`:**
+- Agent calls `compare_price(session["selected_item"])`.
+- Tool compares the selected tee against other `tops` listings, preferring items with overlapping style tags or colors.
+- Agent stores the result in `session["price_comparison"]`, such as `verdict = "fair price"` or `verdict = "good deal"` with the comparable median and explanation.
+
+**Step 3 - `check_trends`:**
+- Agent calls `check_trends("vintage graphic tee", size=None, item=session["selected_item"])`.
+- Tool matches keywords from the query and item, such as `"graphic tee"`, `"band tee"`, `"grunge"`, and `"charcoal"`, against the curated local trend map.
+- Expected trend output includes `"Neo-grunge"` with a note about faded graphics, darker layers, and grounded shoes.
+- Agent stores the dict in `session["trend_awareness"]`.
+
+**Step 4 - style profile memory:**
+- Agent calls `update_style_profile(session["query"], session["selected_item"], session["wardrobe"])`.
+- Tool stores selected style tags, colors, category, recent query text, and listing id in `data/style_profile_memory.json`.
+- On the next interaction, `load_style_profile()` loads those preferences so the user does not have to re-enter them.
+
+**Step 5 - `suggest_outfit`:**
+- Agent calls `suggest_outfit(session["selected_item"], wardrobe_with_style_profile_and_trends)`.
 - Tool sends the selected listing plus wardrobe pieces such as `"Baggy straight-leg jeans, dark wash"`, `"Chunky white sneakers"`, and `"Black combat boots"` to the LLM.
+- The prompt also includes style memory and trend awareness, so the outfit can lean into remembered preferences and the `"Neo-grunge"` styling direction.
 - LLM returns an outfit suggestion, for example:
   `"Pair the faded grey band tee with your baggy straight-leg jeans and black combat boots for a relaxed grunge look. Add the black crossbody bag to keep it practical, and use the brown leather belt to give the oversized shape some structure."`
 - Agent stores that string in `session["outfit_suggestion"]`.
 
-**Step 2 retry path - only if first outfit attempt fails:**
+**Step 5 retry path - only if first outfit attempt fails:**
 - If the first `suggest_outfit` call returns empty text, the agent checks for another listing in `session["search_results"]`.
-- If another listing exists, the agent sets `session["retry_count"] = 1`, updates `session["selected_item"]` to the next listing, and calls `suggest_outfit()` again.
+- If another listing exists, the agent sets `session["retry_count"] = 1`, updates `session["selected_item"]` to the next listing, refreshes price, trend, and memory state, and calls `suggest_outfit()` again.
 - If the second attempt fails, the agent sets `session["error"]` to the outfit error and returns early.
 
-**Step 3 - `create_fit_card`:**
+**Step 6 - `create_fit_card`:**
 - Agent calls `create_fit_card(session["outfit_suggestion"], session["selected_item"])`.
 - Tool sends the outfit text and selected item details to the LLM.
 - LLM returns a caption, for example:
@@ -397,11 +451,14 @@ Write out what a full user interaction looks like from start to finish - tool ca
 
 **Return to user:**
 - The first Gradio panel displays the selected listing title, price, size, condition, platform, colors, and style tags.
-- The second panel displays `session["outfit_suggestion"]`.
+- The first panel also displays the price comparison and any search fallback adjustments.
+- The second panel displays `session["outfit_suggestion"]`, the style memory note, and the trend awareness note.
 - The third panel displays `session["fit_card"]`.
 
 **Search error path example:**
 If `search_listings("designer ballgown", size="XXS", max_price=5)` returns `[]`, the agent:
-1. Sets `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."`
-2. Returns early without calling `suggest_outfit` or `create_fit_card`.
-3. Displays the error in the first output panel and leaves the other panels empty.
+1. Retries without the size filter and records `"No matches found in size XXS; removed the size filter."`
+2. If still empty, retries without the price ceiling and records `"No matches found under $5.00; removed the price ceiling."`
+3. Sets `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."`
+4. Returns early without calling `compare_price`, `check_trends`, `suggest_outfit`, or `create_fit_card`.
+5. Displays the error in the first output panel and leaves the other panels empty.
