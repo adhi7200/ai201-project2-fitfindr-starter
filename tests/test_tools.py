@@ -1,6 +1,13 @@
 
 import tools
-from tools import compare_price, create_fit_card, search_listings, suggest_outfit
+from tools import (
+    compare_price,
+    create_fit_card,
+    load_style_profile,
+    search_listings,
+    suggest_outfit,
+    update_style_profile,
+)
 from utils.data_loader import get_empty_wardrobe, get_example_wardrobe
 
 def test_search_returns_results():
@@ -145,3 +152,69 @@ def test_compare_price_handles_no_comparables(monkeypatch):
 
     assert result["verdict"] == "not enough data"
     assert result["comparable_count"] == 0
+
+
+def test_style_profile_loads_default_when_missing(tmp_path, monkeypatch):
+    memory_path = tmp_path / "style_profile_memory.json"
+    monkeypatch.setattr(tools, "STYLE_PROFILE_PATH", str(memory_path))
+
+    profile = load_style_profile()
+
+    assert profile["style_tags"] == []
+    assert profile["colors"] == []
+    assert profile["recent_queries"] == []
+
+
+def test_update_style_profile_persists_selected_item(tmp_path, monkeypatch):
+    memory_path = tmp_path / "style_profile_memory.json"
+    monkeypatch.setattr(tools, "STYLE_PROFILE_PATH", str(memory_path))
+    item = search_listings("vintage graphic tee", size=None, max_price=50)[0]
+
+    profile = update_style_profile("vintage graphic tee under $50", item, get_example_wardrobe())
+    loaded_profile = load_style_profile()
+
+    assert item["id"] in profile["last_selected_item_ids"]
+    assert item["category"] in loaded_profile["categories"]
+    assert any(tag in loaded_profile["style_tags"] for tag in item["style_tags"])
+
+
+def test_suggest_outfit_includes_style_profile_memory(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["prompt"] = kwargs["messages"][1]["content"]
+
+            class Message:
+                content = "Style it with remembered vintage pieces."
+
+            class Choice:
+                message = Message()
+
+            class Response:
+                choices = [Choice()]
+
+            return Response()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: FakeClient())
+
+    item = search_listings("vintage graphic tee", size=None, max_price=50)[0]
+    wardrobe = get_example_wardrobe()
+    wardrobe["_style_profile"] = {
+        "style_tags": ["vintage", "streetwear"],
+        "colors": ["black"],
+        "categories": ["tops"],
+        "recent_queries": [],
+        "last_selected_item_ids": [],
+    }
+    result = suggest_outfit(item, wardrobe)
+
+    assert result.strip() != ""
+    assert "Style profile memory" in captured["prompt"]
+    assert "vintage" in captured["prompt"]

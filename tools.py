@@ -12,6 +12,7 @@ Tools:
     create_fit_card(outfit, new_item)               → str
 """
 
+import json
 import os
 
 from dotenv import load_dotenv
@@ -20,6 +21,20 @@ from groq import Groq
 from utils.data_loader import load_listings
 
 load_dotenv()
+
+STYLE_PROFILE_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "data",
+    "style_profile_memory.json",
+)
+
+DEFAULT_STYLE_PROFILE = {
+    "style_tags": [],
+    "colors": [],
+    "categories": [],
+    "recent_queries": [],
+    "last_selected_item_ids": [],
+}
 
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -156,7 +171,9 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     if not new_item:
         return ""
 
-    wardrobe_items = (wardrobe or {}).get("items", [])
+    wardrobe_context = wardrobe or {}
+    wardrobe_items = wardrobe_context.get("items", [])
+    style_profile = wardrobe_context.get("_style_profile") or {}
     item_summary = (
         f"{new_item.get('title', 'Selected item')} "
         f"({new_item.get('category', 'unknown category')}, "
@@ -165,6 +182,16 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         f"tags: {', '.join(new_item.get('style_tags', []))}, "
         f"${new_item.get('price', 'unknown')} on {new_item.get('platform', 'unknown')})"
     )
+    profile_parts = []
+    if style_profile.get("style_tags"):
+        profile_parts.append(f"remembered style tags: {', '.join(style_profile['style_tags'][:5])}")
+    if style_profile.get("colors"):
+        profile_parts.append(f"remembered colors: {', '.join(style_profile['colors'][:5])}")
+    if style_profile.get("categories"):
+        profile_parts.append(f"remembered categories: {', '.join(style_profile['categories'][:3])}")
+    profile_text = ""
+    if profile_parts:
+        profile_text = "\nStyle profile memory:\n" + "; ".join(profile_parts) + "\n"
 
     if wardrobe_items:
         wardrobe_text = "\n".join(
@@ -181,6 +208,7 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
             f"{item_summary}\n\n"
             "User wardrobe:\n"
             f"{wardrobe_text}\n\n"
+            f"{profile_text}"
             "Suggest 1-2 complete outfits that use the new item and named "
             "pieces from the wardrobe. Include why the colors, silhouette, "
             "and style work together. Keep it practical and specific."
@@ -189,6 +217,7 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         user_prompt = (
             "New thrifted item:\n"
             f"{item_summary}\n\n"
+            f"{profile_text}"
             "The user has not added wardrobe items yet. Suggest 1-2 ways to "
             "style this item using common basics, including colors, silhouettes, "
             "shoes, and accessories that would work well."
@@ -305,6 +334,54 @@ def compare_price(item: dict) -> dict:
         "verdict": verdict,
         "explanation": explanation,
     }
+
+
+def load_style_profile() -> dict:
+    """Load the local style profile memory, or return an empty profile."""
+    try:
+        with open(STYLE_PROFILE_PATH, "r", encoding="utf-8") as f:
+            profile = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {key: value.copy() for key, value in DEFAULT_STYLE_PROFILE.items()}
+
+    default_profile = {key: value.copy() for key, value in DEFAULT_STYLE_PROFILE.items()}
+    for key in default_profile:
+        if isinstance(profile.get(key), list):
+            default_profile[key] = profile[key]
+    return default_profile
+
+
+def update_style_profile(query: str, selected_item: dict, wardrobe: dict | None = None) -> dict:
+    """Update local style memory from the latest selected listing."""
+    profile = load_style_profile()
+
+    def prepend_unique(existing: list, new_values: list, limit: int) -> list:
+        merged = []
+        for value in new_values + existing:
+            if value and value not in merged:
+                merged.append(value)
+        return merged[:limit]
+
+    item_tags = selected_item.get("style_tags", []) if selected_item else []
+    item_colors = selected_item.get("colors", []) if selected_item else []
+    item_category = [selected_item.get("category")] if selected_item else []
+    item_id = [selected_item.get("id")] if selected_item else []
+    query_text = [query.strip()] if query and query.strip() else []
+
+    profile["style_tags"] = prepend_unique(profile["style_tags"], item_tags, 12)
+    profile["colors"] = prepend_unique(profile["colors"], item_colors, 12)
+    profile["categories"] = prepend_unique(profile["categories"], item_category, 8)
+    profile["recent_queries"] = prepend_unique(profile["recent_queries"], query_text, 8)
+    profile["last_selected_item_ids"] = prepend_unique(profile["last_selected_item_ids"], item_id, 8)
+
+    try:
+        os.makedirs(os.path.dirname(STYLE_PROFILE_PATH), exist_ok=True)
+        with open(STYLE_PROFILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(profile, f, indent=2)
+    except OSError:
+        pass
+
+    return profile
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────

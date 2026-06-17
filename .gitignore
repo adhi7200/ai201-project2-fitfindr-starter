@@ -13,3 +13,4 @@ env/
 .ipynb_checkpoints/
 
 instructions.txt
+data/style_profile_memory.json

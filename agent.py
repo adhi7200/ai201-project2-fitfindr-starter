@@ -18,7 +18,14 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card, compare_price
+from tools import (
+    search_listings,
+    suggest_outfit,
+    create_fit_card,
+    compare_price,
+    load_style_profile,
+    update_style_profile,
+)
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -44,6 +51,8 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "error": None,               # set if the interaction ended early
         "search_fallbacks": [],       # notes about loosened search constraints
         "price_comparison": None,     # dict returned by compare_price
+        "style_profile": {},          # local persistent style memory
+        "style_profile_note": None,   # short display note about memory
     }
 
 
@@ -98,6 +107,17 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     session = _new_session(query, wardrobe)
     session["retry_count"] = 0
+    session["style_profile"] = load_style_profile()
+
+    def style_profile_note(profile: dict) -> str | None:
+        remembered = []
+        if profile.get("style_tags"):
+            remembered.append(", ".join(profile["style_tags"][:4]))
+        if profile.get("colors"):
+            remembered.append("colors: " + ", ".join(profile["colors"][:3]))
+        if not remembered:
+            return "No saved style profile yet."
+        return "Style memory used: " + "; ".join(remembered)
 
     search_text = (query or "").strip()
     first_sentence = re.split(r"[.!?]", search_text, maxsplit=1)[0]
@@ -168,8 +188,17 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     session["selected_item"] = results[0]
     session["price_comparison"] = compare_price(session["selected_item"])
+    session["style_profile"] = update_style_profile(
+        session["query"],
+        session["selected_item"],
+        session["wardrobe"],
+    )
+    session["style_profile_note"] = style_profile_note(session["style_profile"])
 
-    outfit = suggest_outfit(session["selected_item"], session["wardrobe"])
+    wardrobe_context = dict(session["wardrobe"] or {})
+    wardrobe_context["_style_profile"] = session["style_profile"]
+
+    outfit = suggest_outfit(session["selected_item"], wardrobe_context)
     if not outfit or not outfit.strip():
         if len(results) < 2:
             session["error"] = "Unable to build a complete outfit with your wardrobe and available listings. Try a different search."
@@ -178,7 +207,15 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         session["retry_count"] = 1
         session["selected_item"] = results[1]
         session["price_comparison"] = compare_price(session["selected_item"])
-        outfit = suggest_outfit(session["selected_item"], session["wardrobe"])
+        session["style_profile"] = update_style_profile(
+            session["query"],
+            session["selected_item"],
+            session["wardrobe"],
+        )
+        session["style_profile_note"] = style_profile_note(session["style_profile"])
+        wardrobe_context = dict(session["wardrobe"] or {})
+        wardrobe_context["_style_profile"] = session["style_profile"]
+        outfit = suggest_outfit(session["selected_item"], wardrobe_context)
 
         if not outfit or not outfit.strip():
             session["error"] = "Unable to build a complete outfit with your wardrobe and available listings. Try a different search."

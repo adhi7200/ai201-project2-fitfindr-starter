@@ -88,7 +88,11 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
             )
         listing_text += price_comparison["explanation"]
 
-    return listing_text, session["outfit_suggestion"], session["fit_card"]
+    outfit_text = session["outfit_suggestion"]
+    if session.get("style_profile_note"):
+        outfit_text += f"\n\n{session['style_profile_note']}"
+
+    return listing_text, outfit_text, session["fit_card"]
 
 
 # ── interface ─────────────────────────────────────────────────────────────────

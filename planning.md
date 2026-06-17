@@ -113,6 +113,27 @@ Estimates whether the selected listing is a good deal, fair price, or pricey com
 - If no comparable listings are available, the tool returns a low-confidence result with `verdict = "not enough data"` instead of raising an exception.
 - The agent still continues to `suggest_outfit` and `create_fit_card`; price comparison is helpful context, not a blocking step.
 
+### Tool 5: style profile memory
+
+**What it does:**
+Persists lightweight style preferences across runs so the agent can remember repeated user interests. The memory is stored locally in `data/style_profile_memory.json` and is based on selected listings and recent queries.
+
+**Functions:**
+- `load_style_profile()` reads the local memory file and returns a default empty profile if the file does not exist.
+- `update_style_profile(query, selected_item, wardrobe)` updates the memory after a listing is selected.
+
+**Input parameters:**
+- `query` (str): The user's natural language request.
+- `selected_item` (dict): The listing chosen by the agent.
+- `wardrobe` (dict): The active wardrobe dict.
+
+**What it returns:**
+- A style profile dict containing remembered style tags, colors, categories, recent query terms, and recently selected listing ids.
+
+**What happens if it fails or returns nothing:**
+- If the memory file is missing, empty, or unreadable, the tool returns a default empty profile.
+- If the memory file cannot be written, the agent continues the normal workflow without blocking outfit generation.
+
 
 ---
 
@@ -125,6 +146,7 @@ The planning loop runs in `run_agent(query, wardrobe)` in `agent.py`. It branche
 1. **Initialize session**
    - Call `_new_session(query, wardrobe)`.
    - Add `session["retry_count"] = 0` to track the one allowed outfit retry.
+   - Call `load_style_profile()` and store the result in `session["style_profile"]`.
 
 2. **Parse the query**
    - Extract `description`, `size`, and `max_price` from the user's natural language query.
@@ -146,8 +168,14 @@ The planning loop runs in `run_agent(query, wardrobe)` in `agent.py`. It branche
    - Store the returned dict in `session["price_comparison"]`.
    - Continue even if the verdict is `"not enough data"`.
 
-5. **Call `suggest_outfit`**
-   - Invoke `suggest_outfit(session["selected_item"], session["wardrobe"])`.
+5. **Update and use style profile memory**
+   - Call `update_style_profile(session["query"], session["selected_item"], session["wardrobe"])`.
+   - Store the returned profile in `session["style_profile"]`.
+   - Add the style profile to the wardrobe context passed into `suggest_outfit`.
+   - Store a short display summary in `session["style_profile_note"]`.
+
+6. **Call `suggest_outfit`**
+   - Invoke `suggest_outfit(session["selected_item"], wardrobe_with_style_profile)`.
    - If the returned string is non-empty, store it in `session["outfit_suggestion"]`.
    - If the returned string is empty or an LLM error prevents useful output, retry once:
      - Set `session["retry_count"] = 1`.
@@ -156,7 +184,7 @@ The planning loop runs in `run_agent(query, wardrobe)` in `agent.py`. It branche
      - Call `suggest_outfit` again with the alternate listing.
      - If the second attempt fails, set the outfit error and return early.
 
-6. **Call `create_fit_card`**
+7. **Call `create_fit_card`**
    - Invoke `create_fit_card(session["outfit_suggestion"], session["selected_item"])`.
    - If the returned caption is non-empty, store it in `session["fit_card"]` and return the completed session.
    - If the caption is empty or an error message, set `session["error"]` and return the session.
@@ -185,7 +213,9 @@ session = {
     "error": str | None,
     "retry_count": int,            # 0 normally, 1 after the one allowed suggest_outfit retry.
     "search_fallbacks": list[str],  # Notes about loosened search constraints, if any.
-    "price_comparison": dict | None # Result from compare_price(selected_item).
+    "price_comparison": dict | None, # Result from compare_price(selected_item).
+    "style_profile": dict,          # Persistent local style memory.
+    "style_profile_note": str | None # Short display summary of memory used.
 }
 ```
 
@@ -196,10 +226,11 @@ session = {
 4. If the first search fails, fallback search notes are stored in `session["search_fallbacks"]`.
 5. The agent chooses a listing and stores it in `session["selected_item"]`.
 6. `compare_price()` receives `session["selected_item"]`, and the result is stored in `session["price_comparison"]`.
-7. `suggest_outfit()` receives `session["selected_item"]` and `session["wardrobe"]`.
-8. If the first outfit attempt fails, the agent updates `session["selected_item"]` to the next listing and retries once.
-9. `create_fit_card()` receives `session["outfit_suggestion"]` and `session["selected_item"]`.
-10. If any required step fails, `session["error"]` is set and later dependent tools are not called.
+7. `update_style_profile()` saves style tags, colors, category, recent query text, and selected listing id.
+8. `suggest_outfit()` receives `session["selected_item"]`, `session["wardrobe"]`, and the loaded style profile as extra context.
+9. If the first outfit attempt fails, the agent updates `session["selected_item"]` to the next listing and retries once.
+10. `create_fit_card()` receives `session["outfit_suggestion"]` and `session["selected_item"]`.
+11. If any required step fails, `session["error"]` is set and later dependent tools are not called.
 
 **Tool access pattern:**
 - Tools are pure function-style helpers: they accept arguments and return values.
@@ -216,6 +247,7 @@ For each tool, describe the specific failure mode being handled and what the age
 |------|--------------|----------------|
 | `search_listings` | No listings match the query and the tool returns `[]`. | Retry once without the size filter if size was provided, then retry once without the price ceiling if needed. Record each adjustment in `session["search_fallbacks"]`. If all attempts fail, set `session["error"]` to `"No matching listings were found for that description and price range. Try a different search."` and return early. |
 | `compare_price` | No comparable listings are available. | Return `verdict = "not enough data"` with an explanation. The agent stores the result and continues because price comparison is not required for outfit generation. |
+| `style profile memory` | The memory file is missing, unreadable, or cannot be written. | Use a default empty style profile and continue the workflow. Memory improves personalization, but it is not required for search, outfit generation, or fit card creation. |
 | `suggest_outfit` first attempt | LLM call fails, raises an exception caught by the agent, or returns an empty/whitespace string. | If another listing exists in `session["search_results"]`, set `retry_count` to 1, update `selected_item` to the alternate listing, and call `suggest_outfit` one more time. |
 | `suggest_outfit` second attempt | Retry also fails or there is no alternate listing to try. | Set `session["error"]` to `"Unable to build a complete outfit with your wardrobe and available listings. Try a different search."` and return early. |
 | `suggest_outfit` with empty wardrobe | `wardrobe["items"]` is empty. | This is not an error. The tool asks the LLM for general styling advice and the workflow continues to `create_fit_card`. |
@@ -240,7 +272,8 @@ flowchart TB
     F -- "Yes" --> G["Store search_results and selected_item = results[0]"]
     G --> G1["compare_price(selected_item)"]
     G1 --> G2["Store price_comparison"]
-    G2 --> H["suggest_outfit(selected_item, wardrobe)"]
+    G2 --> G3["load/update style_profile memory"]
+    G3 --> H["suggest_outfit(selected_item, wardrobe + style_profile)"]
     H --> I{"Outfit text valid?"}
     I -- "Yes" --> J["Store outfit_suggestion"]
     I -- "No" --> K{"retry_count == 0 and another listing exists?"}
@@ -258,6 +291,7 @@ flowchart TB
 - All decisions happen in the `run_agent()` planning loop in `agent.py`.
 - `search_listings` gets a limited fallback path before the agent returns a no-results error.
 - `compare_price` runs after the selected listing is chosen and does not block the workflow.
+- Style profile memory loads at the start of the session, updates after item selection, and adds preference context to outfit generation.
 - `suggest_outfit` gets one retry with another matched listing if the first outfit attempt fails.
 - `create_fit_card` only runs after a valid outfit suggestion exists.
 - Error paths return early with `session["error"]` populated.
