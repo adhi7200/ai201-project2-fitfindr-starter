@@ -241,3 +241,8 @@ I used AI assistance in two main ways:
 3. **Polishing and Wrapping up README:*** Similar to the planning support, I used AI to ensure my `README.md` captured all areas of the project and iteratively used it to make sure all sections fully meet rubric expectations. I went back to read the `README.md` to make sure it is consistent with the project and `planning.md`.
 
 I overrode or tightened AI output to reflect project requirements and my spec where needed, especially around query parsing and retry behavior. For example, the agent only retries `suggest_outfit` after a successful search, and it uses another matched listing rather than broadening the original search.
+
+## Fitfindr Demo
+
+<video controls src="https://www.loom.com/share/21ae07ce45764e61853339d814208c4f" title="Short Demo on the agent flow and highlights of this tool"></video>
+
