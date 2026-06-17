@@ -226,8 +226,6 @@ flowchart TB
 
 ## AI Tool Plan
 
-This plan follows `instructions.txt` milestone by milestone so I can debug and commit between milestones.
-
 **Milestone 1 - Explore starter repo and data**
 - Read `data/listings.json`, `data/wardrobe_schema.json`, `utils/data_loader.py`, `tools.py`, `agent.py`, and `app.py`.
 - Confirm that listing items use `title`, while wardrobe items use `name`.
@@ -241,7 +239,7 @@ This plan follows `instructions.txt` milestone by milestone so I can debug and c
 - Commit the finalized planning document before implementation.
 
 **Milestone 3 - Implement and test tools in isolation**
-- For `search_listings`, give Claude or ChatGPT the Tool 1 section and ask for an implementation using `load_listings()`.
+- For `search_listings`, give ChatGPT the Tool 1 section and ask for an implementation using `load_listings()`.
 - For `suggest_outfit`, give the Tool 2 section and ask for a Groq prompt that handles both populated and empty wardrobes.
 - For `create_fit_card`, give the Tool 3 section and ask for a Groq prompt that returns a casual 1-3 sentence caption.
 - Verify each tool manually before wiring the agent:
